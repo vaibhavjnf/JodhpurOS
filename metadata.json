@@ -1,0 +1,8 @@
+{
+  "name": "KachoriCounter AI",
+  "description": "Automated dough ball counting system for commercial kitchens using Computer Vision.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
