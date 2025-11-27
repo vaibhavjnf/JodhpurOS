@@ -9,6 +9,7 @@ import {
 
 // --- Types for Live API ---
 interface LiveShopAssistantProps {
+  apiKey: string; // Accept key as prop
   onNewOrder: (order: ShopOrder) => void;
   onNewInsight: (insight: ShopInsight) => void;
   recentOrders: ShopOrder[];
@@ -182,21 +183,16 @@ async function decodeAudioData(
 // Helper to find canonical menu item from variations
 function findMenuItem(query: string): MenuItem | undefined {
     const q = query.toLowerCase().trim();
-    // 1. Exact Match Name
     let match = SHOP_MENU.find(item => item.name.toLowerCase() === q);
     if (match) return match;
-
-    // 2. Variation Match
     match = SHOP_MENU.find(item => item.variations?.some(v => v.toLowerCase() === q));
     if (match) return match;
-    
-    // 3. Partial Match (Name) - e.g. "Kachori" in "Pyaz Kachori"
     match = SHOP_MENU.find(item => item.name.toLowerCase().includes(q) || q.includes(item.name.toLowerCase()));
-    
     return match;
 }
 
 export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({ 
+  apiKey,
   onNewOrder, 
   onNewInsight, 
   recentOrders, 
@@ -226,11 +222,9 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
   const reconnectTimeoutRef = useRef<number | null>(null);
   const currentSessionRef = useRef<LiveSession | null>(null);
   
-  // Refs to avoid stale closures in WebSocket callbacks
   const onNewOrderRef = useRef(onNewOrder);
   const onNewInsightRef = useRef(onNewInsight);
   const recentOrdersRef = useRef(recentOrders);
-  // Ref for insights to inject into memory
   const recentInsightsRef = useRef(recentInsights);
 
   useEffect(() => {
@@ -341,7 +335,7 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
         throw new Error("Network Offline");
       }
 
-      const apiKey = process.env.API_KEY;
+      // Use the key passed from App.tsx
       if (!apiKey) throw new Error("API Key missing");
 
       let stream: MediaStream | null = null;
@@ -431,6 +425,7 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
           4. **SMART TOTALS**: If asked "Kitne hue" (Total?), calculate from recent orders and answer verbally.
           5. **FUZZY MATCHING**: Match colloquial terms (e.g., 'Pyaz wali') to the Database (e.g., 'Kachori').
           6. **LOGGING**: Use 'logOrder' for sales, 'saveInsight' for shopping/security.
+          7. **CONTEXT MERGE**: If customer adds items ("Aur do samosa"), append to previous order if within 30s.
           `,
           tools: [{ functionDeclarations: [logOrderTool, saveInsightTool, suggestCashierPromptTool, logSentimentTool, triggerTalkbackTool] }],
         },

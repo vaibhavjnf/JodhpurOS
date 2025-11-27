@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { WebcamCapture } from './components/WebcamCapture';
 import { LogHistory } from './components/LogHistory';
 import { LiveShopAssistant } from './components/LiveShopAssistant';
-import { analyzeImageForCount } from './services/geminiService';
+import { analyzeImageForCount, getApiKey, saveApiKey } from './services/geminiService';
 import { CountLog, AppStatus, ShopOrder, ShopInsight } from './types';
-import { ChefHat, AlertCircle, Mic2, Camera, Check, X, Plus, Minus, Key } from 'lucide-react';
+import { ChefHat, AlertCircle, Mic2, Camera, Check, X, Plus, Minus, Key, ArrowRight } from 'lucide-react';
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<'counter' | 'assistant'>('assistant');
-  const [apiKeyMissing, setApiKeyMissing] = useState(false);
+  const [activeApiKey, setActiveApiKey] = useState<string | null>(null);
   
   // Counter State
   const [logs, setLogs] = useState<CountLog[]>([]);
@@ -22,12 +22,24 @@ const App: React.FC = () => {
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [insights, setInsights] = useState<ShopInsight[]>([]);
 
+  // Manual Key Entry State
+  const [inputKey, setInputKey] = useState('');
+
   // Check for API Key on mount
   useEffect(() => {
-    if (!process.env.API_KEY) {
-      setApiKeyMissing(true);
+    const key = getApiKey();
+    if (key) {
+      setActiveApiKey(key);
     }
   }, []);
+
+  const handleManualKeySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (inputKey.trim().length > 10) {
+      saveApiKey(inputKey.trim());
+      setActiveApiKey(inputKey.trim());
+    }
+  };
 
   // Load logs from local storage on mount
   useEffect(() => {
@@ -106,35 +118,48 @@ const App: React.FC = () => {
     setInsights(prev => [insight, ...prev]);
   };
 
-  if (apiKeyMissing) {
+  if (!activeApiKey) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="bg-slate-800 p-8 rounded-2xl border border-red-500/30 shadow-2xl max-w-md text-center">
+        <div className="bg-slate-800 p-8 rounded-2xl border border-red-500/30 shadow-2xl max-w-md w-full text-center animate-in fade-in zoom-in-95 duration-300">
           <div className="bg-red-500/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
              <Key className="w-8 h-8 text-red-400" />
           </div>
           <h1 className="text-2xl font-bold text-white mb-2">Setup Required</h1>
-          <p className="text-slate-400 mb-6">
-            The <code>API_KEY</code> environment variable is missing. 
+          <p className="text-slate-400 mb-6 text-sm">
+            This app requires a Google Gemini API Key to function.
           </p>
+          
+          <form onSubmit={handleManualKeySubmit} className="mb-6">
+             <div className="relative">
+               <input 
+                 type="password" 
+                 value={inputKey}
+                 onChange={(e) => setInputKey(e.target.value)}
+                 placeholder="Paste API Key here (starts with AIza...)"
+                 className="w-full bg-slate-950 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm font-mono placeholder:text-slate-600"
+               />
+               <button 
+                 type="submit"
+                 disabled={inputKey.length < 10}
+                 className="absolute right-2 top-2 bottom-2 bg-amber-600 hover:bg-amber-500 text-white px-3 rounded-lg flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition"
+               >
+                 <ArrowRight className="w-4 h-4" />
+               </button>
+             </div>
+             <p className="text-[10px] text-slate-500 mt-2 text-left">
+               *Key will be saved securely in your browser's Local Storage.
+             </p>
+          </form>
+
           <div className="text-left bg-black/30 p-4 rounded-lg text-xs font-mono text-slate-300 mb-6">
-             <p className="mb-2 text-amber-500">How to fix on Vercel:</p>
+             <p className="mb-2 text-amber-500">How to get a key:</p>
              <ol className="list-decimal pl-4 space-y-1">
-               <li>Go to Project Settings</li>
-               <li>Click "Environment Variables"</li>
-               <li>Add key: <code>API_KEY</code></li>
-               <li>Paste your Gemini API Key</li>
-               <li>Redeploy</li>
+               <li>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Google AI Studio</a></li>
+               <li>Click "Create API Key"</li>
+               <li>Copy the key and paste it above</li>
              </ol>
           </div>
-          <a 
-            href="https://aistudio.google.com/app/apikey" 
-            target="_blank" 
-            rel="noreferrer"
-            className="inline-block w-full py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition"
-          >
-            Get API Key
-          </a>
         </div>
       </div>
     );
@@ -145,7 +170,7 @@ const App: React.FC = () => {
       {/* Top System Bar */}
       <div className="bg-slate-950 text-slate-500 py-1 px-4 text-[10px] font-mono flex justify-between items-center border-b border-white/5 shrink-0">
         <div className="flex gap-4">
-          <span>KACHORI-OS KERNEL V3.1 (HYBRID MODE)</span>
+          <span>KACHORI-OS KERNEL V3.2 (VERCEL READY)</span>
           <span>SECURE CONNECTION</span>
         </div>
         <div className="flex gap-4 items-center">
@@ -211,6 +236,7 @@ const App: React.FC = () => {
         {/* PERSISTENT ASSISTANT: Always mounted, hidden via CSS when not in mode */}
         <div className={`${mode === 'assistant' ? 'block' : 'hidden'} h-full`}>
            <LiveShopAssistant 
+              apiKey={activeApiKey}
               onNewOrder={handleNewOrder}
               onNewInsight={handleNewInsight}
               recentOrders={orders}

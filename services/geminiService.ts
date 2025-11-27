@@ -1,6 +1,42 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeminiAnalysisResult } from "../types";
 
+// --- API Key Helper ---
+export const getApiKey = (): string | null => {
+  // 1. Check Standard Process Env (Webpack/Next.js/CRA)
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.API_KEY) return process.env.API_KEY;
+      if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
+      if (process.env.NEXT_PUBLIC_API_KEY) return process.env.NEXT_PUBLIC_API_KEY;
+    }
+  } catch (e) {}
+
+  // 2. Check Vite Env
+  try {
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+    }
+  } catch (e) {}
+
+  // 3. Check Local Storage (User entered key)
+  try {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('gemini_api_key');
+    }
+  } catch (e) {}
+
+  return null;
+};
+
+export const saveApiKey = (key: string) => {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('gemini_api_key', key);
+  }
+};
+
 const SYSTEM_INSTRUCTION = `
 You are an expert commercial kitchen inventory auditor. 
 Your SOLE TASK is to count "Kachori Dough Balls" (Raw Maida/Flour balls) arranged in a rectangular tray.
@@ -19,9 +55,9 @@ Note: The lighting might be dim or industrial. Trust the shape and texture.
 
 export const analyzeImageForCount = async (base64Image: string): Promise<GeminiAnalysisResult> => {
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) {
-      throw new Error("API Key is missing.");
+      throw new Error("API Key is missing. Please configure it in settings.");
     }
 
     const ai = new GoogleGenAI({ apiKey });
