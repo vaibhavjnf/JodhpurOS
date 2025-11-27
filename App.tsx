@@ -4,22 +4,30 @@ import { LogHistory } from './components/LogHistory';
 import { LiveShopAssistant } from './components/LiveShopAssistant';
 import { analyzeImageForCount } from './services/geminiService';
 import { CountLog, AppStatus, ShopOrder, ShopInsight } from './types';
-import { ChefHat, AlertCircle, Mic2, Camera, Check, X, Plus, Minus } from 'lucide-react';
+import { ChefHat, AlertCircle, Mic2, Camera, Check, X, Plus, Minus, Key } from 'lucide-react';
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<'counter' | 'assistant'>('assistant');
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
   
   // Counter State
   const [logs, setLogs] = useState<CountLog[]>([]);
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
-  // Verification State (The "Long Thought" Feature)
+  // Verification State
   const [pendingCount, setPendingCount] = useState<{count: number, image: string} | null>(null);
 
   // Assistant State
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [insights, setInsights] = useState<ShopInsight[]>([]);
+
+  // Check for API Key on mount
+  useEffect(() => {
+    if (!process.env.API_KEY) {
+      setApiKeyMissing(true);
+    }
+  }, []);
 
   // Load logs from local storage on mount
   useEffect(() => {
@@ -44,7 +52,6 @@ const App: React.FC = () => {
 
     try {
       const result = await analyzeImageForCount(imageData);
-      // Instead of saving immediately, ask user to verify
       setPendingCount({
         count: result.count,
         image: imageData
@@ -98,6 +105,40 @@ const App: React.FC = () => {
   const handleNewInsight = (insight: ShopInsight) => {
     setInsights(prev => [insight, ...prev]);
   };
+
+  if (apiKeyMissing) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-slate-800 p-8 rounded-2xl border border-red-500/30 shadow-2xl max-w-md text-center">
+          <div className="bg-red-500/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
+             <Key className="w-8 h-8 text-red-400" />
+          </div>
+          <h1 className="text-2xl font-bold text-white mb-2">Setup Required</h1>
+          <p className="text-slate-400 mb-6">
+            The <code>API_KEY</code> environment variable is missing. 
+          </p>
+          <div className="text-left bg-black/30 p-4 rounded-lg text-xs font-mono text-slate-300 mb-6">
+             <p className="mb-2 text-amber-500">How to fix on Vercel:</p>
+             <ol className="list-decimal pl-4 space-y-1">
+               <li>Go to Project Settings</li>
+               <li>Click "Environment Variables"</li>
+               <li>Add key: <code>API_KEY</code></li>
+               <li>Paste your Gemini API Key</li>
+               <li>Redeploy</li>
+             </ol>
+          </div>
+          <a 
+            href="https://aistudio.google.com/app/apikey" 
+            target="_blank" 
+            rel="noreferrer"
+            className="inline-block w-full py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition"
+          >
+            Get API Key
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans selection:bg-amber-500 selection:text-white overflow-x-hidden flex flex-col">

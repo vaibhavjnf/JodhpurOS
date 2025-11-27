@@ -29,6 +29,7 @@ export interface ShopOrder {
   timestamp: string;
   items: OrderItem[]; // Changed from string[] to structured OrderItem[]
   status: 'pending' | 'completed';
+  totalAmount?: number;
 }
 
 export interface ShopInsight {

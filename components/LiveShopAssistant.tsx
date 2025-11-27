@@ -4,7 +4,7 @@ import { ShopOrder, ShopInsight, OrderItem } from '../types';
 import { SHOP_MENU, MenuItem } from '../services/menuData';
 import { 
   Mic, Volume2, Activity, MessageSquarePlus, ShieldAlert, ShoppingCart, 
-  Clock, AlertTriangle, Smile, Meh, Frown, Save, Zap
+  Clock, AlertTriangle, Smile, Meh, Frown, Save, Zap, BrainCircuit
 } from 'lucide-react';
 
 // --- Types for Live API ---
@@ -41,7 +41,7 @@ const logOrderTool: FunctionDeclaration = {
 
 const saveInsightTool: FunctionDeclaration = {
   name: "saveInsight",
-  description: "Save a key business insight. IGNORE small talk. Capture shopping needs or security risks.",
+  description: "Save a key business insight or reminder. Use this to remember things for later.",
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -52,7 +52,7 @@ const saveInsightTool: FunctionDeclaration = {
       },
       content: {
         type: Type.STRING,
-        description: "The insight, list item, or risk description.",
+        description: "The insight, reminder, list item, or risk description.",
       },
       severity: {
         type: Type.STRING,
@@ -103,6 +103,21 @@ const logSentimentTool: FunctionDeclaration = {
   },
 };
 
+const triggerTalkbackTool: FunctionDeclaration = {
+  name: "triggerTalkback",
+  description: "Use this to speak to the cashier when you recall a relevant memory.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      message: {
+        type: Type.STRING,
+        description: "The message to speak.",
+      },
+    },
+    required: ["message"],
+  },
+};
+
 // --- Helper Functions ---
 
 // Simple downsampler to 16kHz
@@ -118,7 +133,6 @@ function downsampleBuffer(buffer: Float32Array, inputRate: number, outputRate: n
 }
 
 function createBlob(data: Float32Array): { data: string; mimeType: string } {
-  // Data is assumed to be 16kHz from downsampler
   const l = data.length;
   const int16 = new Int16Array(l);
   for (let i = 0; i < l; i++) {
@@ -215,6 +229,9 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
   // Refs to avoid stale closures in WebSocket callbacks
   const onNewOrderRef = useRef(onNewOrder);
   const onNewInsightRef = useRef(onNewInsight);
+  const recentOrdersRef = useRef(recentOrders);
+  // Ref for insights to inject into memory
+  const recentInsightsRef = useRef(recentInsights);
 
   useEffect(() => {
     sessionHistoryRef.current = sessionHistory;
@@ -227,7 +244,9 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
   useEffect(() => {
     onNewOrderRef.current = onNewOrder;
     onNewInsightRef.current = onNewInsight;
-  }, [onNewOrder, onNewInsight]);
+    recentOrdersRef.current = recentOrders;
+    recentInsightsRef.current = recentInsights;
+  }, [onNewOrder, onNewInsight, recentOrders, recentInsights]);
   
   const inputContextRef = useRef<AudioContext | null>(null);
   const outputContextRef = useRef<AudioContext | null>(null);
@@ -247,7 +266,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
       } catch (e: any) {
         console.warn("Auto-start blocked:", e);
         setStatusText("TAP SCREEN TO ENABLE AUDIO");
-        // Fallback: Use a one-time document listener to init audio contexts if autoplay is blocked
         const enableAudio = async () => {
              if (!isActiveRef.current) await startSession();
              window.removeEventListener('click', enableAudio);
@@ -260,7 +278,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
     init();
 
     return () => {
-        // Cleanup on strict unmount only
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         stopSession();
     };
@@ -270,23 +287,29 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
     const history = sessionHistoryRef.current;
     if (history.orders.length === 0 && history.insights.length === 0) return;
 
-    const headers = ["Timestamp", "Type", "Qty", "Item/Content", "Notes/Category"];
+    const headers = ["Timestamp", "Type", "Qty", "Item/Content", "Notes/Category", "Total"];
     const rows = [
       ...history.orders.flatMap(o => 
-        o.items.map(item => [
-          new Date(o.timestamp).toLocaleTimeString(),
-          "ORDER",
-          item.quantity,
-          item.name,
-          item.notes || ""
-        ])
+        o.items.map(item => {
+           const menuItem = findMenuItem(item.name);
+           const price = menuItem ? menuItem.price : 0;
+           return [
+              new Date(o.timestamp).toLocaleTimeString(),
+              "ORDER",
+              item.quantity,
+              item.name,
+              item.notes || "",
+              price * item.quantity
+           ];
+        })
       ),
       ...history.insights.map(i => [
         new Date(i.timestamp).toLocaleTimeString(),
         "INSIGHT",
         "",
         i.content,
-        `${i.category} (${i.severity || 'low'})`
+        `${i.category} (${i.severity || 'low'})`,
+        ""
       ]),
     ];
 
@@ -308,7 +331,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 
   const startSession = async () => {
     if (isActiveRef.current) return;
-    // Explicitly clean up any previous zombie session before starting new
     stopSession();
     
     setError(null);
@@ -339,7 +361,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
       const inputContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       const outputContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       
-      // Attempt to resume contexts immediately
       if (inputContext.state === 'suspended') await inputContext.resume().catch(() => {});
       if (outputContext.state === 'suspended') await outputContext.resume().catch(() => {});
 
@@ -377,25 +398,41 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
          return line;
       }).join('\n');
 
+      // --- MEMORY INJECTION ---
+      // Build a string from the insights to give the AI "Long Term Memory"
+      const activeMemories = recentInsightsRef.current
+        .map(i => `[${new Date(i.timestamp).toLocaleTimeString()}] ${i.category.toUpperCase()}: ${i.content}`)
+        .join('\n');
+
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
-          responseModalities: [Modality.AUDIO],
+          responseModalities: [Modality.AUDIO], // Enable Audio Out for "Talkback"
           inputAudioTranscription: {}, 
           outputAudioTranscription: {},
-          systemInstruction: `You are 'Munim Ji', an invisible surveillance OS.
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } // Use a distinct, helpful voice
+          },
+          systemInstruction: `You are 'Munim Ji', a smart, context-aware shop assistant.
           
           FULL MENU DATABASE:
           ${menuContext}
 
+          YOUR MEMORY LOG (Context for the day):
+          ${activeMemories || "No active memories yet."}
+
           CORE PROTOCOLS:
-          1. **CONTINUOUS SURVEILLANCE**: Listen continuously. Do not stop.
-          2. **SILENT MODE**: NEVER speak unless asked a specific question.
-          3. **FUZZY MATCHING**: Match colloquial terms (e.g., 'Pyaz wali') to the Database (e.g., 'Kachori').
-          4. **NOISE FILTER**: Ignore all background noise/chatter. Only log Business Info.
-          5. **LOGGING**: Use 'logOrder' for sales.
+          1. **CONTINUOUS SURVEILLANCE**: Listen continuously.
+          2. **SILENT MODE (DEFAULT)**: Only speak when necessary.
+          3. **ACTIVE CONTEXT RECALL**: 
+             - Constantly compare what you hear with 'YOUR MEMORY LOG'.
+             - If you hear something relevant to a stored memory (e.g. "Supplier arrived" and you have a memory "Order Sugar"), **SPEAK UP** immediately using your voice.
+             - Example: "Sir, sugar wala aaya hai, order note karana tha."
+          4. **SMART TOTALS**: If asked "Kitne hue" (Total?), calculate from recent orders and answer verbally.
+          5. **FUZZY MATCHING**: Match colloquial terms (e.g., 'Pyaz wali') to the Database (e.g., 'Kachori').
+          6. **LOGGING**: Use 'logOrder' for sales, 'saveInsight' for shopping/security.
           `,
-          tools: [{ functionDeclarations: [logOrderTool, saveInsightTool, suggestCashierPromptTool, logSentimentTool] }],
+          tools: [{ functionDeclarations: [logOrderTool, saveInsightTool, suggestCashierPromptTool, logSentimentTool, triggerTalkbackTool] }],
         },
         callbacks: {
           onopen: () => {
@@ -416,11 +453,9 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                   const inputData = e.inputBuffer.getChannelData(0);
                   const downsampledData = downsampleBuffer(inputData, inputContext.sampleRate, 16000);
                   const pcmBlob = createBlob(downsampledData);
-                  
-                  // Use current session ref directly to avoid promise chain complexity causing lag
                   currentSessionRef.current.sendRealtimeInput({ media: pcmBlob });
               } catch (err) {
-                  // Ignore minor audio process errors to keep stream alive
+                  // Ignore
               }
             };
             processor.connect(inputContext.destination);
@@ -430,7 +465,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
           },
           onmessage: async (msg: LiveServerMessage) => {
             if (msg.toolCall) {
-              // Aggregate all function calls into a single response payload
               const functionResponses = msg.toolCall.functionCalls.map(fc => {
                 let result: any = { status: "Success" };
                 
@@ -438,38 +472,20 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                     if (fc.name === 'logOrder') {
                        const args = fc.args as any;
                        let rawItems: any[] = [];
-                       
-                       // Aggressive argument unpacking to handle AI hallucinations
-                       if (Array.isArray(args)) {
-                           rawItems = args;
-                       } else if (args.items && Array.isArray(args.items)) {
-                           rawItems = args.items;
-                       } else if (args.order && Array.isArray(args.order)) {
-                           rawItems = args.order;
-                       } else if (typeof args === 'object') {
-                           // Sometimes it returns a single object instead of array
-                           rawItems = [args];
-                       }
+                       if (Array.isArray(args)) { rawItems = args; } 
+                       else if (args.items && Array.isArray(args.items)) { rawItems = args.items; }
+                       else if (typeof args === 'object') { rawItems = [args]; }
                        
                        const normalizedItems: OrderItem[] = [];
 
                        for (const i of rawItems) {
-                           // 1. Extract raw values (checking multiple possible casings)
-                           let rawName = "";
-                           if (typeof i === 'string') {
-                               rawName = i;
-                           } else {
-                               rawName = i.name || i.Name || i.item || i.Item || i.itemName || i.food || i.product || i.dish || "";
-                           }
-
-                           const rawQty = typeof i === 'object' ? (i.quantity || i.Quantity || i.qty || i.Qty || i.count || i.amount || 1) : 1;
-                           const rawNotes = typeof i === 'object' ? (i.notes || i.instructions || "") : "";
+                           let rawName = typeof i === 'string' ? i : (i.name || i.item || "");
+                           const rawQty = typeof i === 'object' ? (i.quantity || i.qty || 1) : 1;
+                           const rawNotes = typeof i === 'object' ? (i.notes || "") : "";
 
                            if (!rawName || rawName === "Unknown Item") continue;
-
-                           // 2. Client-Side Fuzzy Match against Menu
                            const matchedMenu = findMenuItem(rawName);
-                           const finalName = matchedMenu ? matchedMenu.name : rawName; // Use canonical name if found
+                           const finalName = matchedMenu ? matchedMenu.name : rawName;
 
                            normalizedItems.push({
                                name: finalName,
@@ -479,15 +495,36 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                        }
 
                        if (normalizedItems.length > 0) {
-                           const order: ShopOrder = {
-                               id: crypto.randomUUID(),
-                               timestamp: new Date().toISOString(),
-                               items: normalizedItems,
-                               status: 'pending'
-                           };
-                           // Use Ref to call latest state updater
-                           onNewOrderRef.current(order);
-                           setSessionHistory(prev => ({ ...prev, orders: [...prev.orders, order] }));
+                           const now = Date.now();
+                           const lastOrder = recentOrdersRef.current[0];
+                           // Context Merge Logic (10s window)
+                           if (lastOrder && (now - new Date(lastOrder.timestamp).getTime() < 10000)) {
+                               const order: ShopOrder = {
+                                   id: crypto.randomUUID(),
+                                   timestamp: new Date().toISOString(),
+                                   items: normalizedItems,
+                                   status: 'pending',
+                                   totalAmount: normalizedItems.reduce((sum, item) => {
+                                      const m = findMenuItem(item.name);
+                                      return sum + (m ? m.price * item.quantity : 0);
+                                   }, 0)
+                               };
+                               onNewOrderRef.current(order);
+                               setSessionHistory(prev => ({ ...prev, orders: [...prev.orders, order] }));
+                           } else {
+                               const order: ShopOrder = {
+                                   id: crypto.randomUUID(),
+                                   timestamp: new Date().toISOString(),
+                                   items: normalizedItems,
+                                   status: 'pending',
+                                   totalAmount: normalizedItems.reduce((sum, item) => {
+                                      const m = findMenuItem(item.name);
+                                      return sum + (m ? m.price * item.quantity : 0);
+                                   }, 0)
+                               };
+                               onNewOrderRef.current(order);
+                               setSessionHistory(prev => ({ ...prev, orders: [...prev.orders, order] }));
+                           }
                            setCashierPrompt(null);
                            result = { status: "Order Logged" };
                        } else {
@@ -509,7 +546,14 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                     }
                     else if (fc.name === 'suggestCashierPrompt') {
                         const args = fc.args as any;
-                        setCashierPrompt({ text: args.promptText, reason: args.reason });
+                        if (args.promptText.toLowerCase().includes("total") || args.reason.toLowerCase().includes("total")) {
+                             const total = recentOrdersRef.current
+                                .filter(o => (Date.now() - new Date(o.timestamp).getTime() < 300000)) 
+                                .reduce((acc, o) => acc + (o.totalAmount || 0), 0);
+                             setCashierPrompt({ text: `Total is ₹${total}`, reason: "Calculated from recent active orders" });
+                        } else {
+                             setCashierPrompt({ text: args.promptText, reason: args.reason });
+                        }
                         setTimeout(() => setCashierPrompt(null), 10000);
                         result = { status: "Prompt Displayed" };
                     }
@@ -518,6 +562,11 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                       setCurrentSentiment({ type: args.sentiment, summary: args.summary });
                       setTimeout(() => setCurrentSentiment(null), 15000);
                       result = { status: "Sentiment Logged" };
+                    }
+                    else if (fc.name === 'triggerTalkback') {
+                      // Logic handled by Model's speech output naturally, this is just a logging placeholder
+                      // or a signal that the AI decided to speak.
+                      result = { status: "Speaking" };
                     }
                 } catch (err) {
                     console.error("Error executing tool", fc.name, err);
@@ -531,13 +580,12 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                 };
               });
 
-              // Send combined response
               if (functionResponses.length > 0 && currentSessionRef.current) {
                   currentSessionRef.current.sendToolResponse({ functionResponses })
                     .catch(e => console.error("Failed to send tool response", e));
               }
             }
-
+            
             const audioData = msg.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (audioData) {
               setIsSpeaking(true);
@@ -562,7 +610,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
           onclose: () => {
              console.log("Session Closed.");
              if (isActiveRef.current) {
-                 // Only reconnect if we intended to stay active
                  setStatusText("RECONNECTING...");
                  stopSession();
                  reconnectTimeoutRef.current = window.setTimeout(startSession, 3000);
@@ -572,13 +619,11 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
             console.error("Session Error", e);
             setStatusText("CONNECTION ERROR. RETRYING...");
             stopSession();
-            // Longer backoff for errors
             reconnectTimeoutRef.current = window.setTimeout(startSession, 5000); 
           }
         }
       });
       
-      // Store session reference for cleanup
       const session = await sessionPromise;
       currentSessionRef.current = session;
 
@@ -587,20 +632,17 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
       setError(e.message);
       setStatusText("OFFLINE - RETRYING");
       setIsActive(false);
-      
-      // CRITICAL FIX: Ensure contexts are cleaned up if start fails mid-way
       stopSession();
-
-      // Even on start fail, retry
       reconnectTimeoutRef.current = window.setTimeout(startSession, 5000);
     }
   };
 
   const stopSession = () => {
-    // 1. Close the WebSocket Session explicitly
     if (currentSessionRef.current) {
         try {
-            currentSessionRef.current.close();
+            if (typeof currentSessionRef.current.close === 'function') {
+                 currentSessionRef.current.close();
+            }
         } catch (e) {
             console.warn("Failed to close session", e);
         }
@@ -612,7 +654,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
     setIsThinking(false);
     setVisualizerData(new Array(30).fill(0));
 
-    // 2. Disconnect Audio Nodes
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
@@ -625,8 +666,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
     }
-    
-    // 3. Close Audio Contexts
     if (inputContextRef.current) {
         if (inputContextRef.current.state !== 'closed') {
             inputContextRef.current.close().catch(console.warn);
@@ -666,6 +705,10 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
   const shoppingList = recentInsights.filter(i => i.category === 'shopping_list');
   const securityLogs = recentInsights.filter(i => i.category === 'security_risk');
 
+  const sessionRevenue = recentOrders
+     .filter(o => (currentTime - new Date(o.timestamp).getTime()) < 7200000)
+     .reduce((acc, o) => acc + (o.totalAmount || 0), 0);
+
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] gap-6 relative font-sans">
       
@@ -691,9 +734,16 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 
           {/* Orders List */}
           <div className="flex-1 flex flex-col gap-3 overflow-y-auto pr-2 scrollbar-none">
-            <h3 className="text-slate-500 font-bold uppercase tracking-widest text-xs flex items-center gap-2 mb-2 px-1">
-              <Activity className="w-4 h-4 text-emerald-500" /> Active Orders
-            </h3>
+            <div className="flex justify-between items-center mb-2 px-1 sticky top-0 bg-slate-900/90 z-10 backdrop-blur-sm py-2">
+                <h3 className="text-slate-500 font-bold uppercase tracking-widest text-xs flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-emerald-500" /> Active Orders
+                </h3>
+                <div className="bg-slate-800 px-3 py-1 rounded-full border border-white/5">
+                    <span className="text-[10px] text-slate-400 font-mono">REVENUE: </span>
+                    <span className="text-sm font-bold text-emerald-400">₹{sessionRevenue}</span>
+                </div>
+            </div>
+            
             {visibleOrders.length === 0 ? (
               <div className="flex-1 rounded-2xl flex flex-col items-center justify-center text-slate-700 border-2 border-dashed border-slate-800 bg-slate-900/50">
                 <Clock className="w-12 h-12 opacity-20 mb-4" />
@@ -718,17 +768,34 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                         <span>{new Date(order.timestamp).toLocaleTimeString()}</span>
                      </div>
                      <div className="flex flex-wrap gap-3">
-                        {order.items.map((item, i) => (
-                          <div key={i} className="flex items-center gap-4 bg-slate-900/50 px-4 py-3 rounded-xl border border-white/5 min-w-[140px]">
-                             <span className={`text-3xl font-black ${isJalebi ? 'text-orange-400' : 'text-amber-500'}`}>
-                                {item.quantity}
-                             </span>
-                             <div className="flex flex-col">
-                                <span className="text-lg font-bold text-slate-200 leading-tight">{item.name}</span>
-                                {item.notes && <span className="text-xs text-slate-500">{item.notes}</span>}
-                             </div>
-                          </div>
-                        ))}
+                        {order.items.map((item, i) => {
+                             const m = findMenuItem(item.name);
+                             const unitPrice = m ? m.price : 0;
+                             const itemTotal = unitPrice * item.quantity;
+                             
+                             return (
+                                  <div key={i} className="flex items-center gap-4 bg-slate-900/50 px-4 py-3 rounded-xl border border-white/5 min-w-[160px]">
+                                     <span className={`text-3xl font-black ${isJalebi ? 'text-orange-400' : 'text-amber-500'}`}>
+                                        {item.quantity}
+                                     </span>
+                                     <div className="flex flex-col flex-1">
+                                        <span className="text-lg font-bold text-slate-200 leading-tight">{item.name}</span>
+                                        <div className="flex justify-between items-center mt-1">
+                                            <span className="text-xs text-slate-500">₹{unitPrice}/pc</span>
+                                            <span className="text-sm font-bold text-slate-300">₹{itemTotal}</span>
+                                        </div>
+                                        {item.notes && <span className="text-xs text-slate-500 mt-1">{item.notes}</span>}
+                                     </div>
+                                  </div>
+                             );
+                        })}
+                     </div>
+                     {/* Order Total Badge */}
+                     <div className="absolute top-5 right-5">
+                        <div className="bg-white/5 backdrop-blur-sm border border-white/10 px-3 py-1.5 rounded-lg">
+                           <span className="text-xs text-slate-400 mr-2 uppercase tracking-wider">Total</span>
+                           <span className="text-xl font-black text-white">₹{order.totalAmount || 0}</span>
+                        </div>
                      </div>
                   </div>
                 );
@@ -740,30 +807,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
         {/* RIGHT: INTELLIGENCE PANEL */}
         <div className="md:col-span-5 flex flex-col gap-4 overflow-y-auto pr-2 pb-20 scrollbar-thin scrollbar-thumb-slate-700">
            
-           {/* Sentiment Widget */}
-           {currentSentiment && (
-             <div className={`rounded-2xl p-4 animate-in slide-in-from-right-4 border shadow-lg backdrop-blur-md ${
-                currentSentiment.type === 'positive' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200' :
-                currentSentiment.type === 'negative' ? 'bg-red-500/10 border-red-500/20 text-red-200' :
-                'bg-blue-500/10 border-blue-500/20 text-blue-200'
-             }`}>
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-full ${
-                    currentSentiment.type === 'positive' ? 'bg-emerald-500/20' : 
-                    currentSentiment.type === 'negative' ? 'bg-red-500/20' : 'bg-blue-500/20'
-                  }`}>
-                    {currentSentiment.type === 'positive' ? <Smile className="w-5 h-5" /> : 
-                     currentSentiment.type === 'negative' ? <Frown className="w-5 h-5" /> : 
-                     <Meh className="w-5 h-5" />}
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-xs uppercase tracking-wider opacity-70">Sentiment Detected</h4>
-                    <p className="text-sm font-medium">{currentSentiment.summary}</p>
-                  </div>
-                </div>
-             </div>
-           )}
-
            {/* Security Alert */}
            {securityLogs.length > 0 && (
              <div className="bg-red-950/30 border border-red-500/30 rounded-2xl p-4 animate-pulse">
