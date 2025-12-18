@@ -117,7 +117,9 @@ export const LogHistory: React.FC<LogHistoryProps> = ({ logs, onClear, onDelete 
                   <td className="px-4 py-3 text-right">
                     <button 
                         onClick={() => onDelete(log.id)}
-                        className="text-stone-300 hover:text-red-500 transition"
+                        className="text-stone-300 hover:text-red-500 transition focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none rounded"
+                        aria-label="Delete entry"
+                        title="Delete entry"
                     >
                         <Trash2 className="w-4 h-4" />
                     </button>
