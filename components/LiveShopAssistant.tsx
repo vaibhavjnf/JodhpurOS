@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, LiveSession } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Session } from "@google/genai";
 import { ShopOrder, ShopInsight, OrderItem } from '../types';
 import { SHOP_MENU, MenuItem } from '../services/menuData';
 import { 
@@ -220,7 +220,7 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 
   const isActiveRef = useRef(false);
   const reconnectTimeoutRef = useRef<number | null>(null);
-  const currentSessionRef = useRef<LiveSession | null>(null);
+  const currentSessionRef = useRef<Session | null>(null);
   
   const onNewOrderRef = useRef(onNewOrder);
   const onNewInsightRef = useRef(onNewInsight);
@@ -307,7 +307,25 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
       ]),
     ];
 
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(r => r.map(c => `"${c}"`).join(",")).join("\n")].join("\n");
+    // Helper to sanitize CSV fields (prevent CSV Injection and handle quotes)
+    const sanitizeForCsv = (field: any) => {
+      let str = String(field);
+      // If the field starts with potential formula characters, prepend a single quote to neutralize it
+      if (/^[=+\-@]/.test(str)) {
+        str = "'" + str;
+      }
+      // Escape double quotes by doubling them
+      if (str.includes('"')) {
+        str = str.replace(/"/g, '""');
+      }
+      return `"${str}"`;
+    };
+
+    const csvContent = "data:text/csv;charset=utf-8," + [
+        headers.join(","),
+        ...rows.map(r => r.map(c => sanitizeForCsv(c)).join(","))
+    ].join("\n");
+
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
