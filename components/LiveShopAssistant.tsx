@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, LiveSession } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Session } from "@google/genai";
 import { ShopOrder, ShopInsight, OrderItem } from '../types';
 import { SHOP_MENU, MenuItem } from '../services/menuData';
 import { 
   Mic, Volume2, Activity, MessageSquarePlus, ShieldAlert, ShoppingCart, 
-  Clock, AlertTriangle, Smile, Meh, Frown, Save, Zap, BrainCircuit
+  Clock, AlertTriangle, Save, Smile, Meh, Frown
 } from 'lucide-react';
+import { AudioVisualizer } from './AudioVisualizer';
 
 // --- Types for Live API ---
 interface LiveShopAssistantProps {
@@ -200,9 +201,7 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 }) => {
   const [isActive, setIsActive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
   const [cashierPrompt, setCashierPrompt] = useState<{text: string, reason: string} | null>(null);
-  const [visualizerData, setVisualizerData] = useState<number[]>(new Array(30).fill(0));
   const [error, setError] = useState<string | null>(null);
   const [currentSentiment, setCurrentSentiment] = useState<{type: 'positive' | 'neutral' | 'negative', summary: string} | null>(null);
   const [statusText, setStatusText] = useState("INITIALIZING...");
@@ -220,7 +219,7 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 
   const isActiveRef = useRef(false);
   const reconnectTimeoutRef = useRef<number | null>(null);
-  const currentSessionRef = useRef<LiveSession | null>(null);
+  const currentSessionRef = useRef<Session | null>(null);
   
   const onNewOrderRef = useRef(onNewOrder);
   const onNewInsightRef = useRef(onNewInsight);
@@ -249,7 +248,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const rafRef = useRef<number | null>(null);
   const cleanupIntervalRef = useRef<number | null>(null);
 
   // --- Auto-Start on Mount ---
@@ -366,25 +364,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
       const analyser = inputContext.createAnalyser();
       analyser.fftSize = 128;
       analyserRef.current = analyser;
-      
-      const updateVisualizer = () => {
-        if (!analyserRef.current) return;
-        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteFrequencyData(dataArray);
-        
-        const average = dataArray.reduce((a,b) => a+b, 0) / dataArray.length;
-        setIsThinking(average > 30);
-
-        const bars: number[] = [];
-        const step = Math.floor(dataArray.length / 30);
-        for (let i = 0; i < 30; i++) {
-           const val = dataArray[i * step] || 0;
-           bars.push(val / 255);
-        }
-        setVisualizerData(bars);
-        rafRef.current = requestAnimationFrame(updateVisualizer);
-      };
-      updateVisualizer();
 
       const menuContext = SHOP_MENU.map(item => {
          let line = `- ${item.name}: ₹${item.price}`;
@@ -646,8 +625,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
 
     setIsActive(false);
     setIsSpeaking(false);
-    setIsThinking(false);
-    setVisualizerData(new Array(30).fill(0));
 
     if (processorRef.current) {
       processorRef.current.disconnect();
@@ -656,10 +633,6 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
     if (sourceRef.current) {
       sourceRef.current.disconnect();
       sourceRef.current = null;
-    }
-    if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
     }
     if (inputContextRef.current) {
         if (inputContextRef.current.state !== 'closed') {
@@ -725,6 +698,19 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
                   <p className="opacity-80 mt-1 text-sm">{cashierPrompt.reason}</p>
                 </div>
             </div>
+          )}
+
+          {/* Sentiment Overlay */}
+          {currentSentiment && (
+              <div className="absolute bottom-4 left-4 right-4 z-40 bg-slate-800 p-4 rounded-xl border border-white/10 shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
+                  {currentSentiment.type === 'positive' && <Smile className="text-green-400 w-6 h-6 shrink-0" />}
+                  {currentSentiment.type === 'neutral' && <Meh className="text-yellow-400 w-6 h-6 shrink-0" />}
+                  {currentSentiment.type === 'negative' && <Frown className="text-red-400 w-6 h-6 shrink-0" />}
+                  <div>
+                    <p className="text-xs font-bold uppercase text-slate-500">Sentiment Analysis</p>
+                    <p className="text-white font-medium text-sm">{currentSentiment.summary}</p>
+                  </div>
+              </div>
           )}
 
           {/* Orders List */}
@@ -851,16 +837,11 @@ export const LiveShopAssistant: React.FC<LiveShopAssistantProps> = ({
             </div>
          </div>
 
-         {isActive && !error && (
-            <div className="flex items-end gap-[2px] h-6 opacity-30 mx-auto">
-               {visualizerData.map((val, i) => (
-                  <div key={i} 
-                       className="w-1 bg-amber-400 rounded-t-sm transition-all duration-75" 
-                       style={{ height: `${Math.max(10, val * 100)}%` }}
-                  ></div>
-               ))}
-            </div>
-         )}
+         <AudioVisualizer
+           analyser={analyserRef.current}
+           isActive={isActive}
+           error={error}
+         />
          
          <button 
            onClick={(e) => { e.stopPropagation(); generateSessionReport(); }}
