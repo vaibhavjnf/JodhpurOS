@@ -142,7 +142,8 @@ const App: React.FC = () => {
                <button 
                  type="submit"
                  disabled={inputKey.length < 10}
-                 className="absolute right-2 top-2 bottom-2 bg-amber-600 hover:bg-amber-500 text-white px-3 rounded-lg flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition"
+                 className="absolute right-2 top-2 bottom-2 bg-amber-600 hover:bg-amber-500 text-white px-3 rounded-lg flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-amber-500 focus-visible:outline-none"
+                 aria-label="Submit API Key"
                >
                  <ArrowRight className="w-4 h-4" />
                </button>
